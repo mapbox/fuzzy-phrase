@@ -7,7 +7,7 @@ use std::path::Path;
 
 use fst;
 use fst::{IntoStreamer, Set, SetBuilder};
-use fst::raw::{CompiledAddr};
+use fst::raw::{CompiledAddr, Fst, Transition};
 
 use self::util::word_ids_to_key;
 use self::util::PhraseSetError;
@@ -100,28 +100,35 @@ impl PhraseSet {
             }
         };
 
-        // get min value greater than or qual to the sought min
-        let node0 = fst.node(full_word_addr);
-        for t0 in node0.transitions().skip_while(|t| t.inp < sought_min_key[0]) {
-            let must_skip1 = t0.inp == sought_min_key[0];
-            let node1 = fst.node(t0.addr);
-            for t1 in node1.transitions() {
-                if must_skip1 && t1.inp < sought_min_key[1] {
-                    continue;
+        fn find_first_after(transitions: &mut Iterator<Item=Transition>, fst: &Fst, min_key: &Vec<u8>, must_skip: bool, i: usize) ->
+            Option<Vec<u8>> {
+            if i == 2 {
+                if let Some(t) = transitions.next() {
+                    return Some(vec![0, 0, t.inp]);
                 }
-                let must_skip2 = must_skip1 && t1.inp == sought_min_key[1];
-                let node2 = fst.node(t1.addr);
-                for t2 in node2.transitions() {
-                    if must_skip2 && t2.inp < sought_min_key[2] {
-                        continue;
+            } else {
+                for t in transitions.into_iter() {
+                    let next_must_skip = must_skip && t.inp == min_key[i];
+                    let mut recurse_result = if next_must_skip {
+                        find_first_after(&mut fst.node(t.addr).transitions().skip_while(|t| t.inp < min_key[i + 1]), fst, min_key, next_must_skip, i + 1)
+                    } else {
+                        find_first_after(&mut fst.node(t.addr).transitions(), fst, min_key, next_must_skip, i + 1)
+                    };
+                    if let Some(mut result) = recurse_result {
+                        result[i] = t.inp;
+                        return Some(result);
                     }
-                    // we've got three bytes! woohoo!
-                    let mut next_after_min = vec![t0.inp, t1.inp, t2.inp];
-                    return next_after_min <= sought_max_key;
                 }
             }
+            None
         }
-        false
+
+        // get min value greater than or equal to the sought min
+        let node0 = fst.node(full_word_addr);
+        match find_first_after(&mut node0.transitions().skip_while(|t| t.inp < sought_min_key[0]), fst, &sought_min_key, true, 0) {
+            Some(result) => result <= sought_max_key,
+            None => false,
+        }
     }
 
     /// Create from a raw byte sequence, which must be written by `PhraseSetBuilder`.
