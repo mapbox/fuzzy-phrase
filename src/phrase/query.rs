@@ -93,16 +93,17 @@ impl<'a> QueryPhrase<'a> {
 
     /// Generate a key from the ids of the full words in this phrase
     pub fn full_word_key(&self) -> Vec<u8> {
-        let mut word_ids: Vec<u32> = vec![];
+        let mut full_word_key: Vec<u8> = vec![];
         for word in self.words {
             match word {
                 QueryWord::Full{ ref id, .. } => {
-                    word_ids.push(*id);
+                    let three_bytes = util::three_byte_encode(*id);
+                    full_word_key.extend(three_bytes);
                 },
                 _ => (),
             }
         }
-        util::word_ids_to_key(&word_ids)
+        full_word_key
     }
 
     /// Generate a key from the prefix range

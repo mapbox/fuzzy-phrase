@@ -1,7 +1,9 @@
 use std::fs::File;
-use std::io::{BufRead, BufReader, SeekFrom};
+use std::io::{BufRead, BufReader};
 use std::collections::{BTreeSet, BTreeMap};
 use std::rc::Rc;
+use std::env;
+use rand::{thread_rng, Rng};
 use criterion::{Criterion, Fun, Bencher};
 use fuzzy_phrase::{PhraseSet, PhraseSetBuilder};
 use fuzzy_phrase::phrase::query::{QueryWord, QueryPhrase};
@@ -71,8 +73,18 @@ pub fn benchmark(c: &mut Criterion) {
         phrases: Vec<Vec<u32>>,
         phrase_set: PhraseSet
     };
+    let data_loc = match env::var("PHRASE_BENCH") {
+        Ok(f) => {
+            println!("file loc is {}", f);
+            f
+        },
+        Err(..) => String::from("./benches/data/phrase_test.txt"),
+    };
+    let (word_to_id, mut phrases, phrase_set) = build_phrase_graph(&data_loc);
 
-    let (word_to_id, phrases, phrase_set) = build_phrase_graph("./benches/data/phrase_test.txt");
+    // we want to randomly sample so that we get lots of different results
+    let mut rng = thread_rng();
+    rng.shuffle(&mut phrases);
 
     // move the prebuilt data into a reference-counted struct
     let shared_data = Rc::new(BenchData { word_to_id, phrases, phrase_set });
@@ -88,11 +100,7 @@ pub fn benchmark(c: &mut Criterion) {
     let data = shared_data.clone();
 
     to_bench.push(Fun::new("exact_contains", move |b: &mut Bencher, _i| {
-        // we're benching on a list of phrases, but criterion needs to run for as long as it wants
-        // to get a statistically significant sample, potentially for more iterations than we have
-        // words, so we'll build all the benches around cycle iterators that go forever
         let mut cycle = data.phrases.iter().cycle();
-
         // the closure based to b.iter is the thing that will actually be timed; everything before
         // that is untimed per-benchmark setup
         b.iter(|| {
@@ -110,6 +118,7 @@ pub fn benchmark(c: &mut Criterion) {
     let data = shared_data.clone();
     to_bench.push(Fun::new("exact_contains_prefix", move |b: &mut Bencher, _i| {
         let mut cycle = data.phrases.iter().cycle();
+
         b.iter(|| {
             let query_ids = cycle.next().unwrap();
             let query_words = query_ids.iter()
@@ -125,6 +134,7 @@ pub fn benchmark(c: &mut Criterion) {
     let data = shared_data.clone();
     to_bench.push(Fun::new("range_contains_prefix", move |b: &mut Bencher, _i| {
         let mut cycle = data.phrases.iter().cycle();
+
         b.iter(|| {
             let word_ids = cycle.next().unwrap();
             let fullword_ids = &word_ids[..word_ids.len()];
@@ -137,6 +147,27 @@ pub fn benchmark(c: &mut Criterion) {
             query_words.push(QueryWord::Prefix{ id_range: (last_id_min, last_id_max) });
             let query_phrase = QueryPhrase::new(&query_words).unwrap();
             let _result = data.phrase_set.contains_prefix(query_phrase).unwrap();
+        });
+    }));
+
+    // data is shadowed here for ease of copying and pasting, but this is a new clone
+    // (again, same data, new reference, because it's an Rc)
+    let data = shared_data.clone();
+    to_bench.push(Fun::new("range_fst_range", move |b: &mut Bencher, _i| {
+        let mut cycle = data.phrases.iter().cycle();
+
+        b.iter(|| {
+            let word_ids = cycle.next().unwrap();
+            let fullword_ids = &word_ids[..word_ids.len()];
+            let last_id = &word_ids[word_ids.len()-1];
+            let last_id_min = 0.max(last_id - 50);
+            let last_id_max = last_id + 50;
+            let mut query_words = fullword_ids.iter()
+                .map(|w| QueryWord::Full{ id: *w, edit_distance: 0})
+                .collect::<Vec<QueryWord>>();
+            query_words.push(QueryWord::Prefix{ id_range: (last_id_min, last_id_max) });
+            let query_phrase = QueryPhrase::new(&query_words).unwrap();
+            let _result = data.phrase_set.range(query_phrase).unwrap();
         });
     }));
 

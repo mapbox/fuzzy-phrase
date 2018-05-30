@@ -6,7 +6,7 @@ use std::io;
 use std::path::Path;
 
 use fst;
-use fst::{IntoStreamer, Set, SetBuilder};
+use fst::{IntoStreamer, Set, SetBuilder, Streamer};
 use fst::raw::{CompiledAddr, Fst, Transition};
 
 use self::util::word_ids_to_key;
@@ -129,6 +129,19 @@ impl PhraseSet {
             Some(result) => result <= sought_max_key,
             None => false,
         }
+    }
+
+    pub fn range(&self, phrase: QueryPhrase) -> Result<bool, PhraseSetError> {
+        let mut max_key = phrase.full_word_key();
+        let mut min_key = phrase.full_word_key();
+        let (last_id_min, last_id_max) = phrase.prefix_key_range().unwrap();
+        min_key.extend(last_id_min);
+        max_key.extend(last_id_max);
+        let mut range_stream = self.0.range().ge(min_key).le(max_key).into_stream();
+        let _result = match range_stream.next() {
+            Some(..) => return Ok(true),
+            None => return Ok(false),
+        };
     }
 
     /// Create from a raw byte sequence, which must be written by `PhraseSetBuilder`.

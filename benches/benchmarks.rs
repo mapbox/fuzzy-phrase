@@ -4,6 +4,7 @@ extern crate fuzzy_phrase;
 extern crate fst;
 extern crate reqwest;
 extern crate itertools;
+extern crate rand;
 
 use criterion::Criterion;
 
