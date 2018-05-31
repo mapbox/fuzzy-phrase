@@ -12,7 +12,7 @@ fn tokenize(s: &str) -> Vec<String> {
     s.split(" ").map(|w| w.to_lowercase()).collect()
 }
 
-pub fn build_phrase_graph(file_loc: &str) -> (BTreeMap<String, u32>, Vec<Vec<u32>>, PhraseSet) {
+pub fn build_phrase_graph(file_loc: &str) -> (BTreeMap<String, u32>, PhraseSet) {
     // fetch data and build the structures
     let mut autoinc = 0;
     let f = File::open(file_loc).expect("tried to open_file");
@@ -60,7 +60,7 @@ pub fn build_phrase_graph(file_loc: &str) -> (BTreeMap<String, u32>, Vec<Vec<u32
     let bytes = build.into_inner().unwrap();
 
     let phrase_set = PhraseSet::from_bytes(bytes).unwrap();
-    return (word_to_id, phrases, phrase_set)
+    return (word_to_id, phrase_set)
 }
 
 
@@ -70,24 +70,41 @@ pub fn benchmark(c: &mut Criterion) {
     // and a built prefix set, so define a struct to contain them
     struct BenchData {
         word_to_id: BTreeMap<String, u32>,
-        phrases: Vec<Vec<u32>>,
+        sample: Vec<Vec<u32>>,
         phrase_set: PhraseSet
     };
-    let data_loc = match env::var("PHRASE_BENCH") {
+    let data_basename = match env::var("PHRASE_BENCH") {
         Ok(f) => {
             println!("file loc is {}", f);
             f
         },
-        Err(..) => String::from("./benches/data/phrase_test.txt"),
+        Err(..) => String::from("./benches/data/phrase_test"),
     };
-    let (word_to_id, mut phrases, phrase_set) = build_phrase_graph(&data_loc);
+    let data_loc = format!("{}.txt", data_basename);
+    let (word_to_id, phrase_set) = build_phrase_graph(&data_loc);
+
+
+    let sample_loc = format!("{}_sample.txt", data_basename);
+    let f = File::open(sample_loc).expect("tried to open_file");
+    let file_buf = BufReader::new(&f);
+    let mut sample: Vec<Vec<u32>> = vec![];
+    for line in file_buf.lines() {
+       let s: String = line.unwrap();
+       let mut word_ids: Vec<u32> = vec![];
+       let words = tokenize(s.as_str());
+       for word in words {
+           let word_id = word_to_id.get(&word).unwrap();
+           word_ids.push(*word_id);
+       }
+       sample.push(word_ids);
+    }
 
     // we want to randomly sample so that we get lots of different results
     let mut rng = thread_rng();
-    rng.shuffle(&mut phrases);
+    rng.shuffle(&mut sample);
 
     // move the prebuilt data into a reference-counted struct
-    let shared_data = Rc::new(BenchData { word_to_id, phrases, phrase_set });
+    let shared_data = Rc::new(BenchData { word_to_id, sample, phrase_set });
 
     // make a vector I'm going to fill with closures to bench-test
     let mut to_bench = Vec::new();
@@ -100,7 +117,7 @@ pub fn benchmark(c: &mut Criterion) {
     let data = shared_data.clone();
 
     to_bench.push(Fun::new("exact_contains", move |b: &mut Bencher, _i| {
-        let mut cycle = data.phrases.iter().cycle();
+        let mut cycle = data.sample.iter().cycle();
         // the closure based to b.iter is the thing that will actually be timed; everything before
         // that is untimed per-benchmark setup
         b.iter(|| {
@@ -117,7 +134,7 @@ pub fn benchmark(c: &mut Criterion) {
     // (again, same data, new reference, because it's an Rc)
     let data = shared_data.clone();
     to_bench.push(Fun::new("exact_contains_prefix", move |b: &mut Bencher, _i| {
-        let mut cycle = data.phrases.iter().cycle();
+        let mut cycle = data.sample.iter().cycle();
 
         b.iter(|| {
             let query_ids = cycle.next().unwrap();
@@ -133,7 +150,7 @@ pub fn benchmark(c: &mut Criterion) {
     // (again, same data, new reference, because it's an Rc)
     let data = shared_data.clone();
     to_bench.push(Fun::new("range_contains_prefix", move |b: &mut Bencher, _i| {
-        let mut cycle = data.phrases.iter().cycle();
+        let mut cycle = data.sample.iter().cycle();
 
         b.iter(|| {
             let word_ids = cycle.next().unwrap();
@@ -154,7 +171,7 @@ pub fn benchmark(c: &mut Criterion) {
     // (again, same data, new reference, because it's an Rc)
     let data = shared_data.clone();
     to_bench.push(Fun::new("range_fst_range", move |b: &mut Bencher, _i| {
-        let mut cycle = data.phrases.iter().cycle();
+        let mut cycle = data.sample.iter().cycle();
 
         b.iter(|| {
             let word_ids = cycle.next().unwrap();

@@ -25,9 +25,19 @@ function download() {
     language=$3
     script=$4
     fname="${country}_${language}_${script}.txt.gz"
+    sample_fname="${country}_${language}_${script}_sample.txt.gz"
+
+    mkdir -p "${TMP}/${type}"
+
     FROM="${S3_DIR}/${type}/${fname}"
     TO="${TMP}/${type}/${fname}"
-    mkdir -p "${TMP}/${type}"
+    echo "Downloading ${FROM}"
+    aws s3 cp $FROM $TO
+    echo "Extracting ${TO}"
+    gunzip $TO
+
+    FROM="${S3_DIR}/${type}/${sample_fname}"
+    TO="${TMP}/${type}/${sample_fname}"
     echo "Downloading ${FROM}"
     aws s3 cp $FROM $TO
     echo "Extracting ${TO}"
@@ -50,9 +60,10 @@ function run() {
     country=$2
     language=$3
     script=$4
-    fname="${country}_${language}_${script}.txt"
+    # this will be used to create filenames ${fbasename}.txt and ${fbasename}_sample.txt
+    fbasename="${country}_${language}_${script}"
     echo "running"
-    env PHRASE_BENCH="${TMP}/${type}/${fname}" cargo bench -v "${type}"
+    env PHRASE_BENCH="${TMP}/${type}/${fbasename}" cargo bench -v "${type}"
     exit 0
 }
 
