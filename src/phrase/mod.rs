@@ -7,7 +7,7 @@ use std::path::Path;
 
 use fst;
 use fst::{IntoStreamer, Set, SetBuilder, Streamer};
-use fst::raw::{CompiledAddr};
+use fst::raw::{CompiledAddr, Fst, Transition};
 
 use self::util::word_ids_to_key;
 use self::util::PhraseSetError;
@@ -100,209 +100,35 @@ impl PhraseSet {
             }
         };
 
-        // get actual_min
-        let mut min_n = fst.node(full_word_addr);
-        let mut actual_min_key: Vec<u8> = Vec::new();
-        for _i in 0..3 {
-            let min_t = min_n.transitions().nth(0).unwrap();
-            actual_min_key.push(min_t.inp);
-            min_n = fst.node(min_t.addr);
-        }
-
-        debug_assert!(actual_min_key.len() == 3);
-
-        // if actual_min > sought_max: sought range is below actual range
-        if actual_min_key > sought_max_key {
-            return false
-        }
-        // these two can be collapsed, assuming actual_min < sought_max:
-        //   - if (actual_min > sought_min) && (actual_max > sought_max): true
-        //   - if (actual_min > sought_min) && (actual_max < sought_max): true
-        // └─> else if (actual_min > sought_min): true
-        else if actual_min_key > sought_min_key {
-            return true
-        }
-
-        // get actual_max
-        let mut max_n = fst.node(full_word_addr);
-        let mut actual_max_key: Vec<u8> = Vec::new();
-        for _i in 0..3 {
-            let max_t = max_n.transitions().last().unwrap();
-            actual_max_key.push(max_t.inp);
-            max_n = fst.node(max_t.addr);
-        }
-
-        debug_assert!(actual_max_key.len() == 3);
-
-        // if actual_max < sought_min: sought range is above actual range
-        if actual_max_key < sought_min_key {
-            return false
-        }
-
-        // by now we know that the ranges intersect.
-        // if actual_max < sought_max: the intersection includes actual_max, so we know there's at
-        // least one match
-        if actual_max_key < sought_max_key {
-            return true
-        }
-
-        // Now we know that the sought range is completely contained within the limits of the
-        // actual one. We're still not sure, though, if there is an actual path shared by both. A
-        // simple, non-graph example to demonstrate this point:
-        //
-        // ```
-        // let actual_values = [ 1, 2, 7, 8, 9 ]
-        // let actual_range = (actual_values.first(), actual_values.last())
-        // let sought_range = (3, 6)
-        // ```
-        //
-        // Here, `sought_range` is completely contained within `actual_range` (1,9)`), but that
-        // doesn't mean that there's actually a match.  we have to look at actual values and ask
-        // whether or not any of them really fall within the sought range. Since none do, we'd
-        // return false.
-        debug_assert!((actual_min_key <= sought_min_key) && (actual_max_key >= sought_max_key));
-
-        // The same is true here, so we need to look for any evidence that there's at least one
-        // valid path in the graph that is within our sought range. We need to traverse the subtree
-        // bounded by the prefix range, if it exists. We know that `sought_min_key` and
-        // `sought_max_key` aren't in the graph, but parts of them may be.
-
-        let mut looks: Vec<Look> = Vec::new();
-        // initialize things so that the first iteration requires looking between the first bytes
-        // of the sought min and max keys.
-        looks.push(Look::Between(full_word_addr));
-        let mut i = 0;
-        while i < 3 {
-            let min_byte = sought_min_key[i];
-            let max_byte = sought_max_key[i];
-            let mut next_looks: Vec<Look> = Vec::new();
-            for look in looks.into_iter() {
-                for nl in self.range_search(look, min_byte, max_byte) {
-                    match nl {
-                        Look::Stop => return true,
-                        _ => {
-                            next_looks.push(nl);
-                        },
+        fn find_first_after(transitions: &mut Iterator<Item=Transition>, fst: &Fst, min_key: &Vec<u8>, must_skip: bool, i: usize) ->
+            Option<Vec<u8>> {
+            if i == 2 {
+                if let Some(t) = transitions.next() {
+                    return Some(vec![0, 0, t.inp]);
+                }
+            } else {
+                for t in transitions.into_iter() {
+                    let next_must_skip = must_skip && t.inp == min_key[i];
+                    let mut recurse_result = if next_must_skip {
+                        find_first_after(&mut fst.node(t.addr).transitions().skip_while(|t| t.inp < min_key[i + 1]), fst, min_key, next_must_skip, i + 1)
+                    } else {
+                        find_first_after(&mut fst.node(t.addr).transitions(), fst, min_key, next_must_skip, i + 1)
+                    };
+                    if let Some(mut result) = recurse_result {
+                        result[i] = t.inp;
+                        return Some(result);
                     }
                 }
             }
-
-            looks = next_looks;
-            i += 1
+            None
         }
 
-        // in the unlikely event that the min and max sought keys are the same
-        // AND they match an edge of the actual range, we'll have followed them through
-        // but never found anything in between them. this logic handles that edge case
-        if (sought_max_key == sought_min_key) && (
-            (sought_min_key == actual_max_key) | (sought_min_key == actual_min_key)) {
-            match self.partial_search(full_word_addr, &sought_max_key) {
-                Some(..) => { return true },
-                _ => (),
-            }
+        // get min value greater than or equal to the sought min
+        let node0 = fst.node(full_word_addr);
+        match find_first_after(&mut node0.transitions().skip_while(|t| t.inp < sought_min_key[0]), fst, &sought_min_key, true, 0) {
+            Some(result) => result <= sought_max_key,
+            None => false,
         }
-
-        return false
-    }
-
-    fn range_search(&self, look: Look, min_byte: u8, max_byte: u8) -> Vec<Look> {
-        // Most of the time we'll only return one `Look` directive but it is possible to return
-        // more than one.
-        let mut next_looks: Vec<Look> = Vec::new();
-        let fst = &self.0.as_fst();
-        match look {
-            Look::Stop => {
-                panic!("range_search was called with `Look::Stop`");
-            },
-            Look::Between(current_addr) => {
-                let current_node = fst.node(current_addr);
-
-                // this handles the case where we're doing a between search, but the sought keys
-                // share a byte. in that case, if possible, we follow the transition matching that
-                // byte and do another between search starting at the node that that transition
-                // points to.
-                if min_byte == max_byte {
-                    if let Some(t_i) = current_node.find_input(min_byte) {
-                        let t = current_node.transition(t_i);
-                        next_looks.push(Look::Between(t.addr));
-                        return next_looks
-                    }
-                }
-
-                // filter for the transitions between min and max (inclusive)
-                let transition_iter = current_node.transitions()
-                    .skip_while(|t| t.inp < min_byte)
-                    .take_while(|t| t.inp <= max_byte);
-
-                // iterate over the filtered transitions
-                for t in transition_iter {
-                    if (t.inp > min_byte) && (t.inp < max_byte) {
-                        // if we see anything between min and max, then we found at least one path
-                        // within the range and we can stop
-                        next_looks.clear();
-                        next_looks.push(Look::Stop);
-                        return next_looks
-                    } else if t.inp == min_byte {
-                        // if we see min_byte, we might need to follow it and look above
-                        // the min next iteration
-                        next_looks.push(Look::Above(t.addr));
-                    } else if t.inp == max_byte {
-                        // if we see max_byte, we might need to follow it and look below
-                        // the max next iteration
-                        next_looks.push(Look::Below(t.addr));
-                    }
-                }
-                // if no transitions were found, we'll return an empty vector
-            },
-            Look::Above(current_addr) => {
-                let current_node = fst.node(current_addr);
-
-                // filter for transitions equal to or above the min_byte
-                let transition_iter = current_node.transitions()
-                    .skip_while(|t| t.inp < min_byte);
-
-                // iterate over the filtered transitions
-                for t in transition_iter {
-                    if t.inp > min_byte {
-                        // if it is anything above the min, then we found at least one path within the
-                        // range and we can stop
-                        next_looks.clear();
-                        next_looks.push(Look::Stop);
-                        return next_looks
-                    } else if t.inp == min_byte {
-                        // if it is the same as min_byte, we might need to follow it and look
-                        // above the min next iteration
-                        next_looks.push(Look::Above(t.addr));
-                    }
-                }
-
-                // if no transitions were found, we'll return an empty vector
-            },
-            Look::Below(current_addr) => {
-                let current_node = fst.node(current_addr);
-
-                // filter for transitions equal to or below the max_byte
-                let transition_iter = current_node.transitions()
-                    .take_while(|t| t.inp <= max_byte);
-
-                // iterate over the filtered transitions
-                for t in transition_iter {
-                    if t.inp < max_byte {
-                        // if it is anything below the max, then we found at least one path within the
-                        // range and we can stop
-                        next_looks.clear();
-                        next_looks.push(Look::Stop);
-                        return next_looks
-                    } else if t.inp == max_byte {
-                        // if it is the same as max_byte, we might need to follow it and look
-                        // above the min next iteration
-                        next_looks.push(Look::Below(t.addr));
-                    }
-                }
-                // if no transitions were found, we'll return an empty vector
-            },
-        }
-        return next_looks
     }
 
     pub fn range(&self, phrase: QueryPhrase) -> Result<bool, PhraseSetError> {
@@ -328,14 +154,6 @@ impl PhraseSet {
         Set::from_path(path).map(PhraseSet)
     }
 
-}
-
-#[derive(Debug)]
-enum Look {
-    Above(CompiledAddr),
-    Below(CompiledAddr),
-    Between(CompiledAddr),
-    Stop
 }
 
 impl<'s, 'a> IntoStreamer<'a> for &'s PhraseSet {
