@@ -228,7 +228,7 @@ impl FuzzyPhraseSet {
         if !prefix_path.exists() {
             return Err(Box::new(IoError::new(IoErrorKind::NotFound, "Prefix FST does not exist")));
         }
-        let prefix_set = unsafe { PrefixSet::from_path(&prefix_path) }?;
+        let prefix_set = PrefixSet::from_path(&prefix_path)?;
 
         // the fuzzy graph needs to be able to go from ID to actual word
         // one idea was to look this up from the prefix graph, which can do backwards lookups
@@ -247,10 +247,10 @@ impl FuzzyPhraseSet {
         if !phrase_path.exists() {
             return Err(Box::new(IoError::new(IoErrorKind::NotFound, "Phrase FST does not exist")));
         }
-        let phrase_set = unsafe { PhraseSet::from_path(&phrase_path) }?;
+        let phrase_set = PhraseSet::from_path(&phrase_path)?;
 
         let fuzzy_path = directory.join(Path::new("fuzzy"));
-        let fuzzy_map = unsafe { FuzzyMap::from_path(&fuzzy_path) }?;
+        let fuzzy_map = FuzzyMap::from_path(&fuzzy_path)?;
 
         Ok(FuzzyPhraseSet {
             prefix_set, phrase_set, fuzzy_map, word_list, script_regex, max_edit_distance

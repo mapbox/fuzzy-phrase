@@ -58,7 +58,7 @@ fn insert_phrases_file() {
     build.insert(&[561_528u32, 1u32, 61_528_u32]).unwrap();
     build.finish().unwrap();
 
-    let phrase_set = unsafe { PhraseSet::from_path("/tmp/phrase-set.fst") }.unwrap();
+    let phrase_set = PhraseSet::from_path("/tmp/phrase-set.fst").unwrap();
 
     let mut keys = vec![];
     let mut stream = phrase_set.into_stream();

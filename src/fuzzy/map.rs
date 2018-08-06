@@ -4,10 +4,8 @@ use std::cmp::{min, Ordering};
 use itertools::Itertools;
 use fst::raw;
 use fst::Error as FstError;
-#[cfg(feature = "mmap")]
 use std::path::{Path, PathBuf};
-use std::fs::File;
-use std::io::{BufReader, BufWriter};
+use std::io::{BufReader, BufWriter, Read};
 use serde::{Deserialize, Serialize};
 use rmps::{Deserializer, Serializer};
 use std::io::{Error as IoError, ErrorKind as IoErrorKind};
@@ -45,10 +43,15 @@ impl PartialOrd for FuzzyMapLookupResult {
 }
 
 impl FuzzyMap {
-    #[cfg(feature = "mmap")]
-    pub unsafe fn from_path<P: AsRef<Path>>(path: P) -> Result<Self, FstError> {
+    pub fn from_path<P: AsRef<Path>>(path: P) -> Result<Self, FstError> {
         let file_start = path.as_ref();
-        let fst = raw::Fst::from_path(file_start.with_extension("fst"))?;
+
+        let mut buffer: Vec<u8> = Vec::new();
+        let mut file = BufReader::new(fs::File::open(file_start.with_extension("fst"))?);
+        file.read_to_end(&mut buffer)?;
+        buffer.shrink_to_fit();
+        let fst = raw::Fst::from_bytes(buffer)?;
+
         let mf_reader = BufReader::new(fs::File::open(file_start.with_extension("msg"))?);
         let id_list: SerializableIdList = Deserialize::deserialize(&mut Deserializer::new(mf_reader)).unwrap();
         Ok(FuzzyMap { id_list: id_list.0, fst: fst })
@@ -147,7 +150,7 @@ impl FuzzyMap {
 
 pub struct FuzzyMapBuilder {
     id_builder: Vec<Vec<u32>>,
-    builder: raw::Builder<BufWriter<File>>,
+    builder: raw::Builder<BufWriter<fs::File>>,
     file_path: PathBuf,
     word_variants: Vec<(String, u32)>,
     edit_distance: u8,
@@ -242,14 +245,14 @@ mod tests {
             let file_start = dir.path().join("fuzzy");
             FuzzyMapBuilder::build_from_iter(&file_start, WORDS.iter().cloned(), 1).unwrap();
 
-            unsafe { FuzzyMap::from_path(&file_start).unwrap() }
+            FuzzyMap::from_path(&file_start).unwrap()
         };
         static ref MAP_D2: FuzzyMap = {
             let dir = tempfile::tempdir().unwrap();
             let file_start = dir.path().join("fuzzy");
             FuzzyMapBuilder::build_from_iter(&file_start, WORDS.iter().cloned(), 2).unwrap();
 
-            unsafe { FuzzyMap::from_path(&file_start).unwrap() }
+            FuzzyMap::from_path(&file_start).unwrap()
         };
     }
 

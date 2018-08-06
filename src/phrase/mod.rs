@@ -2,8 +2,9 @@ pub mod util;
 pub mod query;
 
 use std::io;
-#[cfg(feature = "mmap")]
 use std::path::Path;
+use std::io::prelude::*;
+use std::fs::File;
 
 use fst;
 use fst::{IntoStreamer, Set, SetBuilder, Streamer};
@@ -383,9 +384,13 @@ impl PhraseSet {
         Set::from_bytes(bytes).map(PhraseSet)
     }
 
-    #[cfg(feature = "mmap")]
-    pub unsafe fn from_path<P: AsRef<Path>>(path: P) -> Result<Self, fst::Error> {
-        Set::from_path(path).map(PhraseSet)
+    pub fn from_path<P: AsRef<Path>>(path: P) -> Result<Self, fst::Error> {
+        let mut buffer: Vec<u8> = Vec::new();
+        let mut file = io::BufReader::new(File::open(path)?);
+        file.read_to_end(&mut buffer)?;
+        buffer.shrink_to_fit();
+
+        PhraseSet::from_bytes(buffer)
     }
 
 }

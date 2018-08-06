@@ -1,6 +1,5 @@
 extern crate fst;
 extern crate itertools;
-extern crate memmap;
 extern crate byteorder;
 extern crate regex;
 

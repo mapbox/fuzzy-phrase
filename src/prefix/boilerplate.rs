@@ -1,7 +1,8 @@
 use std::fmt;
+use std::io;
 use std::io::prelude::*;
-#[cfg(feature = "mmap")]
 use std::path::Path;
+use std::fs::File;
 use fst::Streamer;
 use fst::raw;
 use fst::Error as FstError;
@@ -14,12 +15,16 @@ use fst::automaton::{Automaton, AlwaysMatch};
 pub struct PrefixSet(raw::Fst);
 
 impl PrefixSet {
-    // these are lifted from upstream Set
-    #[cfg(feature = "mmap")]
-    pub unsafe fn from_path<P: AsRef<Path>>(path: P) -> Result<Self, FstError> {
-        raw::Fst::from_path(path).map(PrefixSet)
+    pub fn from_path<P: AsRef<Path>>(path: P) -> Result<Self, FstError> {
+        let mut buffer: Vec<u8> = Vec::new();
+        let mut file = io::BufReader::new(File::open(path)?);
+        file.read_to_end(&mut buffer)?;
+        buffer.shrink_to_fit();
+
+        PrefixSet::from_bytes(buffer)
     }
 
+    // these are lifted from upstream Set
     pub fn from_bytes(bytes: Vec<u8>) -> Result<Self, FstError> {
         raw::Fst::from_bytes(bytes).map(PrefixSet)
     }
