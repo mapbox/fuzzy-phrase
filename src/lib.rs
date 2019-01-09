@@ -4,6 +4,8 @@ extern crate memmap;
 extern crate byteorder;
 extern crate regex;
 extern crate rustc_hash;
+extern crate fast_intersection;
+extern crate capnp;
 
 extern crate serde;
 #[macro_use]
@@ -28,5 +30,7 @@ pub use phrase::PhraseSet;
 pub use phrase::PhraseSetBuilder;
 pub use phrase::query::QueryPhrase;
 pub use phrase::query::QueryWord;
+
+pub mod inverted;
 
 pub mod glue;
