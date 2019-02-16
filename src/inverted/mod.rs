@@ -20,7 +20,8 @@ pub mod inverted_index_capnp;
 
 pub struct InvertedIndex<T, U: capnp::message::ReaderSegments> {
     data: Option<T>,
-    reader: capnp::message::Reader<U>
+    reader: capnp::message::Reader<U>,
+    phrase_lookup_fn: Box<dyn Fn(u32) -> Vec<u32> + Send>
 }
 
 impl<T, U: capnp::message::ReaderSegments> InvertedIndex<T, U> {
@@ -36,15 +37,9 @@ impl<T, U: capnp::message::ReaderSegments> InvertedIndex<T, U> {
         })
     }
 
-    /// Test membership of a single phrase. Returns true iff the phrase matches a complete phrase
-    /// in the set. Wraps the underlying Set::contains method.
-    pub fn contains(&self, phrase: QueryPhrase) -> Result<bool, Box<Error>> {
+    fn get_intersection(&self, ids: &[u32]) -> Result<Vec<u32>, Box<Error>> {
         let mut matches: Option<Vec<u32>> = None;
-        for word in phrase.words {
-            let id = match word {
-                QueryWord::Full { id, .. } => id,
-                _ => panic!("no prefixes")
-            };
+        for id in ids {
             let phrases = self.phrases_for_word(*id)?;
             matches = match matches {
                 Some(existing) => Some(fast_intersection::simd_intersection_avx2(&existing, &phrases)),
@@ -52,9 +47,32 @@ impl<T, U: capnp::message::ReaderSegments> InvertedIndex<T, U> {
             };
         }
         Ok(match matches {
-            Some(intersection) => intersection.len() > 0,
-            None => false
+            Some(intersection) => intersection,
+            None => vec![]
         })
+    }
+
+    /// Test membership of a single phrase. Returns true iff the phrase matches a complete phrase
+    /// in the set. Wraps the underlying Set::contains method.
+    pub fn contains(&self, phrase: QueryPhrase) -> Result<bool, Box<Error>> {
+        let ids: Vec<u32> = phrase.words.iter().map(|word| match word {
+            QueryWord::Full { id, .. } => id.clone(),
+            _ => panic!("no prefixes")
+        }).collect();
+        let intersection = self.get_intersection(&ids)?;
+        Ok(intersection.len() > 0)
+    }
+
+    pub fn match_substring(&self, phrase: QueryPhrase) -> Result<Vec<Vec<QueryWord>>, Box<Error>> {
+        let ids: Vec<u32> = phrase.words.iter().map(|word| match word {
+            QueryWord::Full { id, .. } => id.clone(),
+            _ => panic!("no prefixes")
+        }).collect();
+        let intersection = self.get_intersection(&ids)?;
+        Ok(intersection.iter().map(|phrase_id| {
+            let phrase = (self.phrase_lookup_fn)(*phrase_id);
+            phrase.iter().map(|word_id| QueryWord::new_full(*word_id, 0)).collect()
+        }).collect())
     }
 
     /// Test whether a query phrase can be found at the beginning of any phrase in the Set. Also
@@ -98,7 +116,7 @@ impl<T, U: capnp::message::ReaderSegments> InvertedIndex<T, U> {
 // capnp::serialize::SliceSegments<'a>
 impl InvertedIndex<Vec<u8>, capnp::serialize::OwnedSegments> {
     /// Create from a raw byte sequence, which must be written by `InvertedIndexBuilder`.
-    pub fn from_bytes(bytes: Vec<u8>) -> Result<Self, Box<Error>> {
+    pub fn from_bytes(bytes: Vec<u8>, phrase_lookup_fn: Box<dyn Fn(u32) -> Vec<u32> + Send>) -> Result<Self, Box<Error>> {
         let mut slice: &[u8] = &bytes;
         let reader = serialize::read_message(
             &mut slice,
@@ -106,14 +124,15 @@ impl InvertedIndex<Vec<u8>, capnp::serialize::OwnedSegments> {
         )?;
         Ok(InvertedIndex {
             data: None,
-            reader: reader
+            reader: reader,
+            phrase_lookup_fn: phrase_lookup_fn
         })
     }
 }
 
 #[cfg(feature = "mmap")]
 impl<'a> InvertedIndex<memmap::Mmap, capnp::serialize::SliceSegments<'a>> {
-    pub unsafe fn from_path<P: AsRef<Path>>(path: P) -> Result<Self, Box<Error>> {
+    pub unsafe fn from_path<P: AsRef<Path>>(path: P, phrase_lookup_fn: Box<dyn Fn(u32) -> Vec<u32> + Send>) -> Result<Self, Box<Error>> {
         let in_file = File::open(path)?;
         let mmap = memmap::Mmap::map(&in_file)?;
         let static_slice = {
@@ -127,7 +146,8 @@ impl<'a> InvertedIndex<memmap::Mmap, capnp::serialize::SliceSegments<'a>> {
         )?;
         Ok(InvertedIndex {
             data: Some(mmap),
-            reader: reader
+            reader: reader,
+            phrase_lookup_fn: phrase_lookup_fn
         })
     }
 }

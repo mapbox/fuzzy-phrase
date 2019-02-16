@@ -38,6 +38,9 @@ lazy_static! {
         }
         words
     };
+    static ref WORD_IDS: Vec<&'static str> = {
+        WORDS.keys().map(|s| *s).collect()
+    };
     static ref DISTANCES: BTreeMap<u32, Vec<(u32, u8)>> = {
         let mut out: BTreeMap<u32, Vec<(u32, u8)>> = BTreeMap::new();
 
@@ -60,19 +63,21 @@ lazy_static! {
 
         out
     };
-    static ref II: Mutex<InvertedIndex<Vec<u8>, capnp::serialize::OwnedSegments>> = {
-        let mut builder = InvertedIndexBuilder::memory();
-
+    static ref ID_PHRASES: Vec<Vec<u32>> = {
         let mut id_phrases = PHRASES.iter().map(|phrase| {
             phrase.split(' ').map(|w| WORDS[w]).collect::<Vec<_>>()
         }).collect::<Vec<_>>();
         id_phrases.sort();
-        for (i, id_phrase) in id_phrases.iter().enumerate() {
+        id_phrases
+    };
+    static ref II: Mutex<InvertedIndex<Vec<u8>, capnp::serialize::OwnedSegments>> = {
+        let mut builder = InvertedIndexBuilder::memory();
+        for (i, id_phrase) in ID_PHRASES.iter().enumerate() {
             builder.insert(i as u32, &id_phrase).unwrap();
         }
         let bytes = builder.into_inner().unwrap();
         Mutex::new(
-            InvertedIndex::<Vec<u8>, capnp::serialize::OwnedSegments>::from_bytes(bytes).unwrap()
+            InvertedIndex::<Vec<u8>, capnp::serialize::OwnedSegments>::from_bytes(bytes, Box::new(|id: u32| ID_PHRASES[id as usize].clone())).unwrap()
         )
     };
 }
@@ -81,6 +86,14 @@ fn get_full(phrase: &str) -> Vec<QueryWord> {
     phrase.split(' ').map(
         |w| QueryWord::new_full(WORDS[w], 0)
     ).collect::<Vec<_>>()
+}
+
+fn expand_full(phrase: &[QueryWord]) -> String {
+    let v: Vec<&str> = phrase.iter().map(|word| match word {
+        QueryWord::Full { id, .. } => WORD_IDS[*id as usize],
+        _ => panic!("no prefixes")
+    }).collect();
+    v.join(" ")
 }
 
 fn get_prefix(phrase: &str) -> Vec<QueryWord> {
@@ -104,6 +117,21 @@ fn sample_contains() {
             QueryPhrase::new(&get_full(phrase)).unwrap()
         ).unwrap());
     }
+}
+
+#[test]
+fn sample_match_substring() {
+    let ii = II.lock().unwrap();
+
+    // just test everything
+    // for phrase in PHRASES.iter() {
+    //     assert!(ii.contains(
+    //         QueryPhrase::new(&get_full(phrase)).unwrap()
+    //     ).unwrap());
+    // }
+    let matches = ii.match_substring(QueryPhrase::new(&get_full("Co Rd")).unwrap()).unwrap();
+    let expanded: Vec<_> = matches.iter().map(|x| expand_full(x.as_slice())).collect();
+    println!("{:?}", expanded);
 }
 
 // #[test]
