@@ -16,7 +16,8 @@ lazy_static = "1.0"
 regex = "1.0"
 rustc-hash = "1.0.1"
 fast-intersection = { git = "https://github.com/apendleton/fast-intersection", rev = "5add8e2a50cc6c55ec7b70a20745a4c4b2daf287" }
-capnp = "0.9.4"
+flatbuffers = "0.5.0"
+owning_ref = "0.4.0"
 
 [dependencies.memmap]
 version = "0.6.0"

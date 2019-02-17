@@ -9,30 +9,29 @@ use std::fs::File;
 
 use std::collections::BTreeMap;
 use std::error::Error;
-use capnp::serialize;
 use std::sync::Arc;
+use owning_ref::{self, OwningHandle};
 
 use super::{QueryWord, QueryPhrase};
 
-pub mod inverted_index_capnp;
+mod inverted_index_generated;
+pub use self::inverted_index_generated::{Entry, InvertedIndex as FbInvertedIndex, EntryArgs, InvertedIndexArgs, get_root_as_inverted_index};
 
 #[cfg(test)] mod tests;
 
-pub struct InvertedIndex<T, U: capnp::message::ReaderSegments> {
-    data: Option<T>,
-    reader: capnp::message::Reader<U>,
-    phrase_lookup_fn: Box<dyn Fn(u32) -> Vec<u32> + Send>
+pub struct InvertedIndex<T> where T: owning_ref::StableAddress {
+    reader: OwningHandle<T, Box<FbInvertedIndex<'static>>>,
+    phrase_lookup_fn: Box<dyn Fn(u32) -> Vec<u32> + Send + Sync>
 }
 
-impl<T, U: capnp::message::ReaderSegments> InvertedIndex<T, U> {
+impl<T> InvertedIndex<T> where T: owning_ref::StableAddress {
     fn phrases_for_word(&self, word_id: u32) -> Result<Vec<u32>, Box<Error>> {
-        let root = self.reader.get_root::<inverted_index_capnp::inverted_index::Reader>()?;
-        let entry = root.get_entries()?.get(word_id);
-        let count = entry.get_count();
+        let entry = self.reader.entries().unwrap().get(word_id as usize);
+        let count = entry.count();
         Ok(if count == 0 {
             vec![]
         } else {
-            let compressed = entry.get_compressed_ids()?;
+            let compressed = entry.compressed_ids().unwrap();
             fast_intersection::streamvbyte_delta_decode(compressed, count as usize, 0)
         })
     }
@@ -113,17 +112,14 @@ impl<T, U: capnp::message::ReaderSegments> InvertedIndex<T, U> {
     }
 }
 
-// capnp::serialize::SliceSegments<'a>
-impl InvertedIndex<Vec<u8>, capnp::serialize::OwnedSegments> {
+impl InvertedIndex<Vec<u8>> {
     /// Create from a raw byte sequence, which must be written by `InvertedIndexBuilder`.
-    pub fn from_bytes(bytes: Vec<u8>, phrase_lookup_fn: Box<dyn Fn(u32) -> Vec<u32> + Send>) -> Result<Self, Box<Error>> {
-        let mut slice: &[u8] = &bytes;
-        let reader = serialize::read_message(
-            &mut slice,
-            capnp::message::ReaderOptions::new()
-        )?;
+    pub fn from_bytes(bytes: Vec<u8>, phrase_lookup_fn: Box<dyn Fn(u32) -> Vec<u32> + Send + Sync>) -> Result<Self, Box<Error>> {
+        let reader: OwningHandle<Vec<u8>, Box<FbInvertedIndex<'static>>> = OwningHandle::new_with_fn(bytes, |v| {
+            let data: &[u8] = unsafe { &*v };
+            Box::new(get_root_as_inverted_index(data))
+        });
         Ok(InvertedIndex {
-            data: None,
             reader: reader,
             phrase_lookup_fn: phrase_lookup_fn
         })
@@ -131,21 +127,16 @@ impl InvertedIndex<Vec<u8>, capnp::serialize::OwnedSegments> {
 }
 
 #[cfg(feature = "mmap")]
-impl<'a> InvertedIndex<memmap::Mmap, capnp::serialize::SliceSegments<'a>> {
-    pub unsafe fn from_path<P: AsRef<Path>>(path: P, phrase_lookup_fn: Box<dyn Fn(u32) -> Vec<u32> + Send>) -> Result<Self, Box<Error>> {
+impl InvertedIndex<Box<memmap::Mmap>> {
+    pub unsafe fn from_path<P: AsRef<Path>>(path: P, phrase_lookup_fn: Box<dyn Fn(u32) -> Vec<u32> + Send + Sync>) -> Result<Self, Box<Error>> {
         let in_file = File::open(path)?;
         let mmap = memmap::Mmap::map(&in_file)?;
-        let static_slice = {
+        let reader: OwningHandle<Box<memmap::Mmap>, Box<FbInvertedIndex<'static>>> = OwningHandle::new_with_fn(Box::new(mmap), |m| {
+            let mmap: &memmap::Mmap = unsafe { &*m };
             let slice: &[u8] = mmap.as_ref();
-            // this is probably really stupid
-            std::mem::transmute::<&[u8], &'a [u8]>(slice)
-        };
-        let reader = capnp::serialize::read_message_from_words(
-            capnp::Word::bytes_to_words(static_slice),
-            *capnp::message::ReaderOptions::new().traversal_limit_in_words(1000000000)
-        )?;
+            Box::new(get_root_as_inverted_index(slice))
+        });
         Ok(InvertedIndex {
-            data: Some(mmap),
             reader: reader,
             phrase_lookup_fn: phrase_lookup_fn
         })
@@ -180,38 +171,41 @@ impl<W: io::Write> InvertedIndexBuilder<W> {
     }
 
     pub fn into_inner(mut self) -> Result<W, Box<Error>> {
-        let mut message = ::capnp::message::Builder::new_default();
-        {
-            let inverted_index = message.init_root::<inverted_index_capnp::inverted_index::Builder>();
+        let mut fb_builder = flatbuffers::FlatBufferBuilder::new_with_capacity(1024);
 
-            let num_words: u32 = match self.index.keys().next_back() {
-                Some(max_word) => max_word + 1,
-                _ => 0,
-            };
-            let mut entries = inverted_index.init_entries(num_words);
+        let num_words: u32 = match self.index.keys().next_back() {
+            Some(max_word) => max_word + 1,
+            _ => 0,
+        };
+        let mut entries: Vec<_> = Vec::new();
+        let empty: [u8; 0] = [];
 
-            let mut last_idx: isize = -1;
-            for (word_id, phrases) in (&mut self).index.iter_mut() {
-                let iword_id = *word_id as isize;
-                if iword_id > last_idx + 1 {
-                    for i in (last_idx + 1)..iword_id {
-                        let mut entry = entries.reborrow().get(i as u32);
-                        entry.set_count(0);
-                        entry.set_compressed_ids(&[]);
-                    }
+        let mut last_idx: isize = -1;
+        for (word_id, phrases) in (&mut self).index.iter_mut() {
+            let iword_id = *word_id as isize;
+            if iword_id > last_idx + 1 {
+                for i in (last_idx + 1)..iword_id {
+                    let compressed_ids = fb_builder.create_vector(&empty);
+                    let entry = Entry::create(&mut fb_builder, &EntryArgs{count: 0, compressed_ids: Some(compressed_ids)});
+                    entries.push(entry);
                 }
-
-                phrases.sort();
-                phrases.dedup();
-                let compressed = fast_intersection::streamvbyte_delta_encode(phrases, 0);
-                let mut entry = entries.reborrow().get(iword_id as u32);
-                entry.set_count(phrases.len() as u32);
-                entry.set_compressed_ids(&compressed);
-
-                last_idx = iword_id;
             }
+
+            phrases.sort();
+            phrases.dedup();
+            let compressed = fast_intersection::streamvbyte_delta_encode(phrases, 0);
+            let fb_compressed = fb_builder.create_vector(&compressed);
+            let entry = Entry::create(&mut fb_builder, &EntryArgs{count: phrases.len() as u32, compressed_ids: Some(fb_compressed)});
+            entries.push(entry);
+
+            last_idx = iword_id;
         }
-        serialize::write_message(&mut self.writer, &message)?;
+
+        let fb_entries = fb_builder.create_vector(&entries);
+        let fb_index = FbInvertedIndex::create(&mut fb_builder, &InvertedIndexArgs{entries: Some(fb_entries)});
+
+        fb_builder.finish(fb_index, None);
+        self.writer.write(fb_builder.finished_data())?;
         Ok(self.writer)
     }
 

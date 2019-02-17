@@ -70,15 +70,13 @@ lazy_static! {
         id_phrases.sort();
         id_phrases
     };
-    static ref II: Mutex<InvertedIndex<Vec<u8>, capnp::serialize::OwnedSegments>> = {
+    static ref II: InvertedIndex<Vec<u8>> = {
         let mut builder = InvertedIndexBuilder::memory();
         for (i, id_phrase) in ID_PHRASES.iter().enumerate() {
             builder.insert(i as u32, &id_phrase).unwrap();
         }
         let bytes = builder.into_inner().unwrap();
-        Mutex::new(
-            InvertedIndex::<Vec<u8>, capnp::serialize::OwnedSegments>::from_bytes(bytes, Box::new(|id: u32| ID_PHRASES[id as usize].clone())).unwrap()
-        )
+        InvertedIndex::<Vec<u8>>::from_bytes(bytes, Box::new(|id: u32| ID_PHRASES[id as usize].clone())).unwrap()
     };
 }
 
@@ -109,11 +107,9 @@ fn get_prefix(phrase: &str) -> Vec<QueryWord> {
 
 #[test]
 fn sample_contains() {
-    let ii = II.lock().unwrap();
-
     // just test everything
     for phrase in PHRASES.iter() {
-        assert!(ii.contains(
+        assert!(II.contains(
             QueryPhrase::new(&get_full(phrase)).unwrap()
         ).unwrap());
     }
@@ -121,15 +117,13 @@ fn sample_contains() {
 
 #[test]
 fn sample_match_substring() {
-    let ii = II.lock().unwrap();
-
     // just test everything
     // for phrase in PHRASES.iter() {
     //     assert!(ii.contains(
     //         QueryPhrase::new(&get_full(phrase)).unwrap()
     //     ).unwrap());
     // }
-    let matches = ii.match_substring(QueryPhrase::new(&get_full("Co Rd")).unwrap()).unwrap();
+    let matches = II.match_substring(QueryPhrase::new(&get_full("Co Rd")).unwrap()).unwrap();
     let expanded: Vec<_> = matches.iter().map(|x| expand_full(x.as_slice())).collect();
     println!("{:?}", expanded);
 }

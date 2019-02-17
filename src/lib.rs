@@ -5,7 +5,8 @@ extern crate byteorder;
 extern crate regex;
 extern crate rustc_hash;
 extern crate fast_intersection;
-extern crate capnp;
+extern crate flatbuffers;
+extern crate owning_ref;
 
 extern crate serde;
 #[macro_use]
