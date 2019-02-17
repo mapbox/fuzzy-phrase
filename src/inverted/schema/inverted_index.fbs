@@ -1,0 +1,10 @@
+table Entry {
+    count: uint32;
+    compressed_ids: [ubyte];
+}
+
+table InvertedIndex {
+    entries: [Entry];
+}
+
+root_type InvertedIndex;
