@@ -289,9 +289,9 @@ impl PhraseSet {
                             )?;
                         } else {
                             // if we're at the end, require final node unless autocomplete is on
-                            if search_node.is_final() || ends_in_prefix {
+                            //if search_node.is_final() || ends_in_prefix {
                                 out.push((rec_so_far, ends_in_prefix));
-                            }
+                            //}
                         }
                     }
                 },
